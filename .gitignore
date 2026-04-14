@@ -1,0 +1,5 @@
+node_modules
+dist
+*.AppImage
+*.tsbuildinfo
+src-tauri/target

@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SupportGit</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="module" src="./renderer.js"></script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="topbar card">
+        <div class="brand-block">
+          <p class="eyebrow">SupportGit</p>
+          <h1>Branches, tags, status, commit.</h1>
+        </div>
+
+        <div class="topbar-controls">
+          <div class="action-group">
+            <button id="open-repo-button" class="primary-button">Open Git Folder</button>
+            <button id="use-path-button" class="secondary-button">Use Path</button>
+          </div>
+          <input id="repo-path-input" type="text" placeholder="/path/to/repository" spellcheck="false" />
+        </div>
+      </section>
+
+      <section class="workspace-grid">
+        <section class="card refs-panel">
+          <div class="panel-header">
+            <div class="repo-copy">
+              <p class="panel-label">Repository</p>
+              <p id="repo-path" class="repo-path">No folder selected</p>
+            </div>
+            <div class="head-group">
+              <span class="toolbar-label">Current</span>
+              <span id="current-head" class="current-head">-</span>
+            </div>
+          </div>
+
+          <div class="refs-controls">
+            <input id="search-input" type="search" placeholder="Search branches and tags" disabled />
+            <div class="type-filter-group" role="group" aria-label="Filter refs">
+              <button class="filter-chip active" data-filter="all">All</button>
+              <button class="filter-chip" data-filter="local">Local</button>
+              <button class="filter-chip" data-filter="remote">Remote</button>
+              <button class="filter-chip" data-filter="tag">Tags</button>
+            </div>
+          </div>
+
+          <div class="results-header">
+            <div>
+              <h2>Refs</h2>
+              <p id="results-summary" class="results-summary">Open a repository to load refs.</p>
+            </div>
+            <p id="status-message" class="status-message"></p>
+          </div>
+          <div id="results" class="results empty-state">
+            <p>Select a local git folder to begin.</p>
+          </div>
+        </section>
+
+        <aside class="sidebar">
+          <section class="card status-panel">
+            <div class="results-header compact-header">
+              <div>
+                <h2>Working Tree</h2>
+                <p id="status-summary" class="results-summary">Open a repository to inspect changes.</p>
+              </div>
+            </div>
+
+            <div class="status-columns">
+              <section class="status-column">
+                <div class="status-column-header">
+                  <h3>Staged</h3>
+                  <span id="staged-count" class="count-chip">0</span>
+                </div>
+                <div id="staged-files" class="file-list empty-state compact-empty">
+                  <p>No staged files.</p>
+                </div>
+              </section>
+
+              <section class="status-column">
+                <div class="status-column-header">
+                  <h3>Unstaged</h3>
+                  <span id="unstaged-count" class="count-chip">0</span>
+                </div>
+                <div id="unstaged-files" class="file-list empty-state compact-empty">
+                  <p>No unstaged files.</p>
+                </div>
+              </section>
+            </div>
+          </section>
+
+          <section class="card commit-panel">
+            <div class="results-header compact-header">
+              <div>
+                <h2>Commit</h2>
+                <p class="results-summary">Creates a commit from staged changes only.</p>
+              </div>
+            </div>
+            <textarea
+              id="commit-message"
+              class="commit-message"
+              placeholder="Commit message"
+              rows="4"
+              disabled
+            ></textarea>
+            <button id="commit-button" class="primary-button full-width" disabled>Commit Staged Changes</button>
+          </section>
+        </aside>
+      </section>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,323 @@
+use serde::{Deserialize, Serialize};
+use std::process::Command;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GitRef {
+    name: String,
+    #[serde(rename = "type")]
+    ref_type: String,
+    sha: String,
+    subject: String,
+    checkout_name: String,
+    local_name: Option<String>,
+    remote_name: Option<String>,
+    current: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LoadRefsResult {
+    repo_path: String,
+    refs: Vec<GitRef>,
+}
+
+#[derive(Debug, Serialize)]
+struct CheckoutResult {
+    head: String,
+    detached: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RepoStatusFile {
+    path: String,
+    staged_code: String,
+    unstaged_code: String,
+    staged_label: String,
+    unstaged_label: String,
+    staged: bool,
+    unstaged: bool,
+    untracked: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RepoStatusResult {
+    staged: Vec<RepoStatusFile>,
+    unstaged: Vec<RepoStatusFile>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CommitInput {
+    message: String,
+}
+
+fn run_git(repo_path: &str, args: &[&str]) -> Result<String, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(args)
+        .output()
+        .map_err(|error| format!("Failed to run git: {error}"))?;
+
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok(stdout)
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let message = if stderr.is_empty() {
+            "git command failed".to_string()
+        } else {
+            stderr
+        };
+
+        Err(message)
+    }
+}
+
+fn ensure_git_repo(repo_path: &str) -> Result<(), String> {
+    let output = run_git(repo_path, &["rev-parse", "--is-inside-work-tree"])?;
+    if output == "true" {
+        Ok(())
+    } else {
+        Err("Selected folder is not a git repository.".to_string())
+    }
+}
+
+fn get_current_head(repo_path: &str) -> Result<(String, bool), String> {
+    match run_git(repo_path, &["symbolic-ref", "--quiet", "--short", "HEAD"]) {
+        Ok(head) => Ok((head, false)),
+        Err(_) => {
+            let head = run_git(repo_path, &["rev-parse", "--short", "HEAD"])?;
+            Ok((head, true))
+        }
+    }
+}
+
+fn parse_ref_line(line: &str, ref_type: &str, current_head: &str) -> Option<GitRef> {
+    if line.is_empty() {
+        return None;
+    }
+
+    let mut parts = line.splitn(3, '\t');
+    let name = parts.next()?.to_string();
+    let sha = parts.next().unwrap_or_default().to_string();
+    let subject = parts.next().unwrap_or_default().to_string();
+
+    if ref_type == "remote" && name.ends_with("/HEAD") {
+        return None;
+    }
+
+    let (remote_name, local_name) = if ref_type == "remote" {
+        match name.split_once('/') {
+            Some((remote, local)) => (Some(remote.to_string()), Some(local.to_string())),
+            None => (None, Some(name.clone())),
+        }
+    } else {
+        (None, None)
+    };
+
+    let current = current_head == name
+        || (ref_type == "remote" && local_name.as_deref() == Some(current_head))
+        || (ref_type == "tag" && current_head == name);
+
+    Some(GitRef {
+        checkout_name: name.clone(),
+        name,
+        ref_type: ref_type.to_string(),
+        sha,
+        subject,
+        local_name,
+        remote_name,
+        current,
+    })
+}
+
+fn list_refs(repo_path: &str, pattern: &str, ref_type: &str, current_head: &str) -> Result<Vec<GitRef>, String> {
+    let output = run_git(
+        repo_path,
+        &[
+            "for-each-ref",
+            "--sort=refname",
+            pattern,
+            "--format=%(refname:short)\t%(objectname:short)\t%(contents:subject)",
+        ],
+    )?;
+
+    if output.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    Ok(output
+        .lines()
+        .filter_map(|line| parse_ref_line(line, ref_type, current_head))
+        .collect())
+}
+
+fn status_label(code: char, staged: bool) -> String {
+    match code {
+        'M' => "modified".to_string(),
+        'A' => {
+            if staged {
+                "added".to_string()
+            } else {
+                "added?".to_string()
+            }
+        }
+        'D' => "deleted".to_string(),
+        'R' => "renamed".to_string(),
+        'C' => "copied".to_string(),
+        'U' => "updated".to_string(),
+        '?' => "untracked".to_string(),
+        _ => "clean".to_string(),
+    }
+}
+
+fn parse_status_lines(output: &str) -> RepoStatusResult {
+    let mut staged = Vec::new();
+    let mut unstaged = Vec::new();
+
+    for line in output.lines() {
+        if line.len() < 4 {
+            continue;
+        }
+
+        let chars: Vec<char> = line.chars().collect();
+        let staged_code = chars[0];
+        let unstaged_code = chars[1];
+        let path = line[3..].to_string();
+        let staged_changed = staged_code != ' ' && staged_code != '?';
+        let unstaged_changed = unstaged_code != ' ';
+        let untracked = staged_code == '?' && unstaged_code == '?';
+
+        let entry = RepoStatusFile {
+            path,
+            staged_code: staged_code.to_string(),
+            unstaged_code: unstaged_code.to_string(),
+            staged_label: status_label(staged_code, true),
+            unstaged_label: status_label(unstaged_code, false),
+            staged: staged_changed,
+            unstaged: unstaged_changed || untracked,
+            untracked,
+        };
+
+        if staged_changed {
+            staged.push(RepoStatusFile {
+                path: entry.path.clone(),
+                staged_code: entry.staged_code.clone(),
+                unstaged_code: entry.unstaged_code.clone(),
+                staged_label: entry.staged_label.clone(),
+                unstaged_label: entry.unstaged_label.clone(),
+                staged: entry.staged,
+                unstaged: entry.unstaged,
+                untracked: entry.untracked,
+            });
+        }
+
+        if unstaged_changed || untracked {
+            unstaged.push(entry);
+        }
+    }
+
+    RepoStatusResult { staged, unstaged }
+}
+
+#[tauri::command]
+fn load_refs(repo_path: String) -> Result<LoadRefsResult, String> {
+    ensure_git_repo(&repo_path)?;
+
+    let (head, detached) = get_current_head(&repo_path)?;
+    let mut refs = Vec::new();
+
+    refs.extend(list_refs(&repo_path, "refs/heads", "local", &head)?);
+    refs.extend(list_refs(&repo_path, "refs/remotes", "remote", &head)?);
+    refs.extend(list_refs(&repo_path, "refs/tags", "tag", &head)?);
+
+    if detached {
+        for reference in &mut refs {
+            if reference.sha == head {
+                reference.current = true;
+            }
+        }
+    }
+
+    Ok(LoadRefsResult { repo_path, refs })
+}
+
+#[tauri::command]
+fn checkout_ref(repo_path: String, reference: GitRef) -> Result<CheckoutResult, String> {
+    ensure_git_repo(&repo_path)?;
+
+    match reference.ref_type.as_str() {
+        "local" => {
+            run_git(&repo_path, &["switch", &reference.name])?;
+        }
+        "remote" => {
+            let local_name = reference
+                .local_name
+                .as_deref()
+                .ok_or_else(|| "Remote branch metadata is incomplete.".to_string())?;
+
+            let local_exists = run_git(&repo_path, &["branch", "--list", local_name])?;
+
+            if local_exists.is_empty() {
+                run_git(
+                    &repo_path,
+                    &["switch", "--track", "-c", local_name, &reference.name],
+                )?;
+            } else {
+                run_git(&repo_path, &["switch", local_name])?;
+            }
+        }
+        "tag" => {
+            run_git(&repo_path, &["switch", "--detach", &reference.name])?;
+        }
+        _ => return Err("Unknown ref type.".to_string()),
+    }
+
+    let (head, detached) = get_current_head(&repo_path)?;
+    Ok(CheckoutResult { head, detached })
+}
+
+#[tauri::command]
+fn load_status(repo_path: String) -> Result<RepoStatusResult, String> {
+    ensure_git_repo(&repo_path)?;
+    let output = run_git(&repo_path, &["status", "--short"])?;
+    Ok(parse_status_lines(&output))
+}
+
+#[tauri::command]
+fn create_commit(repo_path: String, input: CommitInput) -> Result<CheckoutResult, String> {
+    ensure_git_repo(&repo_path)?;
+
+    let message = input.message.trim();
+    if message.is_empty() {
+        return Err("Commit message cannot be empty.".to_string());
+    }
+
+    let staged = run_git(&repo_path, &["diff", "--cached", "--name-only"])?;
+    if staged.is_empty() {
+        return Err("There are no staged changes to commit.".to_string());
+    }
+
+    run_git(&repo_path, &["commit", "-m", message])?;
+
+    let (head, detached) = get_current_head(&repo_path)?;
+    Ok(CheckoutResult { head, detached })
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .invoke_handler(tauri::generate_handler![
+            load_refs,
+            checkout_ref,
+            load_status,
+            create_commit
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
