@@ -1,4 +1,6 @@
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::process::Command;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +53,19 @@ struct RepoStatusResult {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CommitInput {
+    message: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GenerateCommitMessageInput {
+    api_key: String,
+    model: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GenerateCommitMessageResult {
     message: String,
 }
 
@@ -175,53 +190,153 @@ fn status_label(code: char, staged: bool) -> String {
     }
 }
 
-fn parse_status_lines(output: &str) -> RepoStatusResult {
-    let mut staged = Vec::new();
-    let mut unstaged = Vec::new();
+fn run_git_bytes(repo_path: &str, args: &[&str]) -> Result<Vec<u8>, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(args)
+        .output()
+        .map_err(|error| format!("Failed to run git: {error}"))?;
 
-    for line in output.lines() {
-        if line.len() < 4 {
+    if output.status.success() {
+        Ok(output.stdout)
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let message = if stderr.is_empty() {
+            "git command failed".to_string()
+        } else {
+            stderr
+        };
+
+        Err(message)
+    }
+}
+
+fn parse_name_status_z(output: &[u8], staged: bool) -> Vec<RepoStatusFile> {
+    let mut entries = Vec::new();
+    let mut parts = output
+        .split(|byte| *byte == 0)
+        .filter(|part| !part.is_empty());
+
+    while let Some(status_part) = parts.next() {
+        let Ok(status_text) = std::str::from_utf8(status_part) else {
+            continue;
+        };
+
+        let code = status_text.chars().next().unwrap_or('?');
+        let first_path = parts
+            .next()
+            .and_then(|part| std::str::from_utf8(part).ok())
+            .unwrap_or_default();
+        let path = if matches!(code, 'R' | 'C') {
+            let new_path = parts
+                .next()
+                .and_then(|part| std::str::from_utf8(part).ok())
+                .unwrap_or_default();
+            if new_path.is_empty() {
+                first_path.to_string()
+            } else if first_path.is_empty() {
+                new_path.to_string()
+            } else {
+                format!("{first_path} -> {new_path}")
+            }
+        } else {
+            first_path.to_string()
+        };
+
+        if path.is_empty() {
             continue;
         }
 
-        let chars: Vec<char> = line.chars().collect();
-        let staged_code = chars[0];
-        let unstaged_code = chars[1];
-        let path = line[3..].to_string();
-        let staged_changed = staged_code != ' ' && staged_code != '?';
-        let unstaged_changed = unstaged_code != ' ';
-        let untracked = staged_code == '?' && unstaged_code == '?';
-
-        let entry = RepoStatusFile {
+        entries.push(RepoStatusFile {
             path,
-            staged_code: staged_code.to_string(),
-            unstaged_code: unstaged_code.to_string(),
-            staged_label: status_label(staged_code, true),
-            unstaged_label: status_label(unstaged_code, false),
-            staged: staged_changed,
-            unstaged: unstaged_changed || untracked,
-            untracked,
-        };
+            staged_code: if staged { code.to_string() } else { String::new() },
+            unstaged_code: if staged { String::new() } else { code.to_string() },
+            staged_label: if staged {
+                status_label(code, true)
+            } else {
+                "clean".to_string()
+            },
+            unstaged_label: if staged {
+                "clean".to_string()
+            } else {
+                status_label(code, false)
+            },
+            staged,
+            unstaged: !staged,
+            untracked: code == '?',
+        });
+    }
 
-        if staged_changed {
-            staged.push(RepoStatusFile {
-                path: entry.path.clone(),
-                staged_code: entry.staged_code.clone(),
-                unstaged_code: entry.unstaged_code.clone(),
-                staged_label: entry.staged_label.clone(),
-                unstaged_label: entry.unstaged_label.clone(),
-                staged: entry.staged,
-                unstaged: entry.unstaged,
-                untracked: entry.untracked,
-            });
+    entries
+}
+
+fn parse_untracked_z(output: &[u8]) -> Vec<RepoStatusFile> {
+    output
+        .split(|byte| *byte == 0)
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| std::str::from_utf8(part).ok())
+        .map(|path| RepoStatusFile {
+            path: path.to_string(),
+            staged_code: String::new(),
+            unstaged_code: "?".to_string(),
+            staged_label: "clean".to_string(),
+            unstaged_label: "untracked".to_string(),
+            staged: false,
+            unstaged: true,
+            untracked: true,
+        })
+        .collect()
+}
+
+fn staged_diff_context(repo_path: &str) -> Result<String, String> {
+    let summary = run_git(
+        repo_path,
+        &["diff", "--cached", "--name-status", "--find-renames", "--find-copies"],
+    )?;
+    let diff = run_git(
+        repo_path,
+        &["diff", "--cached", "--no-color", "--unified=1", "--find-renames", "--find-copies"],
+    )?;
+
+    if summary.is_empty() || diff.is_empty() {
+        return Err("There are no staged changes to summarize.".to_string());
+    }
+
+    const MAX_DIFF_CHARS: usize = 18_000;
+    let truncated_diff: String = diff.chars().take(MAX_DIFF_CHARS).collect();
+
+    Ok(format!(
+        "Changed files:\n{summary}\n\nStaged diff:\n{truncated_diff}"
+    ))
+}
+
+fn extract_response_text(response_json: &Value) -> Option<String> {
+    let output = response_json.get("output")?.as_array()?;
+
+    for item in output {
+        if item.get("type").and_then(Value::as_str) != Some("message") {
+            continue;
         }
 
-        if unstaged_changed || untracked {
-            unstaged.push(entry);
+        let content = item.get("content")?.as_array()?;
+        let mut text_parts = Vec::new();
+
+        for part in content {
+            if let Some(text) = part.get("text").and_then(Value::as_str) {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    text_parts.push(trimmed.to_string());
+                }
+            }
+        }
+
+        if !text_parts.is_empty() {
+            return Some(text_parts.join("\n"));
         }
     }
 
-    RepoStatusResult { staged, unstaged }
+    None
 }
 
 #[tauri::command]
@@ -284,8 +399,29 @@ fn checkout_ref(repo_path: String, reference: GitRef) -> Result<CheckoutResult, 
 #[tauri::command]
 fn load_status(repo_path: String) -> Result<RepoStatusResult, String> {
     ensure_git_repo(&repo_path)?;
-    let output = run_git(&repo_path, &["status", "--short"])?;
-    Ok(parse_status_lines(&output))
+    let staged_output = run_git_bytes(
+        &repo_path,
+        &[
+            "diff",
+            "--cached",
+            "--name-status",
+            "-z",
+            "--find-renames",
+            "--find-copies",
+        ],
+    )?;
+    let unstaged_output = run_git_bytes(
+        &repo_path,
+        &["diff", "--name-status", "-z", "--find-renames", "--find-copies"],
+    )?;
+    let untracked_output =
+        run_git_bytes(&repo_path, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+
+    let staged = parse_name_status_z(&staged_output, true);
+    let mut unstaged = parse_name_status_z(&unstaged_output, false);
+    unstaged.extend(parse_untracked_z(&untracked_output));
+
+    Ok(RepoStatusResult { staged, unstaged })
 }
 
 #[tauri::command]
@@ -308,6 +444,77 @@ fn create_commit(repo_path: String, input: CommitInput) -> Result<CheckoutResult
     Ok(CheckoutResult { head, detached })
 }
 
+#[tauri::command]
+async fn generate_commit_message(
+    repo_path: String,
+    input: GenerateCommitMessageInput,
+) -> Result<GenerateCommitMessageResult, String> {
+    ensure_git_repo(&repo_path)?;
+
+    let api_key = input.api_key.trim();
+    if api_key.is_empty() {
+        return Err("OpenAI API key is required.".to_string());
+    }
+
+    let model = input.model.trim();
+    if model.is_empty() {
+        return Err("OpenAI model is required.".to_string());
+    }
+
+    let diff_context = staged_diff_context(&repo_path)?;
+    let client = Client::new();
+    let response = client
+        .post("https://api.openai.com/v1/responses")
+        .bearer_auth(api_key)
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "model": model,
+            "input": [
+                {
+                    "role": "system",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": "Write a concise git commit message for staged changes. Return plain text only. Use imperative mood. Prefer a short subject line. Add a blank line and bullet list only when the change clearly needs extra detail."
+                        }
+                    ]
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": diff_context
+                        }
+                    ]
+                }
+            ]
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("Failed to call OpenAI API: {error}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unable to read error response.".to_string());
+        return Err(format!("OpenAI API request failed ({status}): {body}"));
+    }
+
+    let response_json: Value = response
+        .json()
+        .await
+        .map_err(|error| format!("Failed to parse OpenAI response: {error}"))?;
+    let message = extract_response_text(&response_json)
+        .ok_or_else(|| "OpenAI response did not include message text.".to_string())?;
+
+    Ok(GenerateCommitMessageResult {
+        message: message.trim().to_string(),
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -316,7 +523,8 @@ pub fn run() {
             load_refs,
             checkout_ref,
             load_status,
-            create_commit
+            create_commit,
+            generate_commit_message
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

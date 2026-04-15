@@ -5,8 +5,9 @@
   "identifier": "com.elvisoliveira.supportgit",
   "build": {
     "beforeBuildCommand": "npm run build",
-    "beforeDevCommand": "npm run build",
-    "frontendDist": "../dist/renderer"
+    "beforeDevCommand": "npm run frontend:dev",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
   },
   "app": {
     "windows": [
