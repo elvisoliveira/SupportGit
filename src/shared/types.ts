@@ -20,3 +20,20 @@ export interface CheckoutResult {
   head: string;
   detached: boolean;
 }
+
+export interface RepoStatusFile {
+  path: string;
+  stagedCode: string;
+  unstagedCode: string;
+  stagedLabel: string;
+  unstagedLabel: string;
+}
+
+export interface RepoStatusResult {
+  staged: RepoStatusFile[];
+  unstaged: RepoStatusFile[];
+}
+
+export interface GenerateCommitMessageResult {
+  message: string;
+}
