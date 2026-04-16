@@ -37,3 +37,7 @@ export interface RepoStatusResult {
 export interface GenerateCommitMessageResult {
   message: string;
 }
+
+export interface GenerateBranchNameResult {
+  branchName: string;
+}

@@ -58,6 +58,12 @@ struct CommitInput {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct CreateBranchInput {
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct GenerateCommitMessageInput {
     api_key: String,
     model: String,
@@ -67,6 +73,12 @@ struct GenerateCommitMessageInput {
 #[serde(rename_all = "camelCase")]
 struct GenerateCommitMessageResult {
     message: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GenerateBranchNameResult {
+    branch_name: String,
 }
 
 fn run_git(repo_path: &str, args: &[&str]) -> Result<String, String> {
@@ -311,6 +323,64 @@ fn staged_diff_context(repo_path: &str) -> Result<String, String> {
     ))
 }
 
+async fn generate_text_from_staged_diff(
+    repo_path: &str,
+    api_key: &str,
+    model: &str,
+    system_prompt: &str,
+) -> Result<String, String> {
+    let diff_context = staged_diff_context(repo_path)?;
+    let client = Client::new();
+    let response = client
+        .post("https://api.openai.com/v1/responses")
+        .bearer_auth(api_key)
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "model": model,
+            "input": [
+                {
+                    "role": "system",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": system_prompt
+                        }
+                    ]
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": diff_context
+                        }
+                    ]
+                }
+            ]
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("Failed to call OpenAI API: {error}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unable to read error response.".to_string());
+        return Err(format!("OpenAI API request failed ({status}): {body}"));
+    }
+
+    let response_json: Value = response
+        .json()
+        .await
+        .map_err(|error| format!("Failed to parse OpenAI response: {error}"))?;
+
+    extract_response_text(&response_json)
+        .map(|text| text.trim().to_string())
+        .ok_or_else(|| "OpenAI response did not include message text.".to_string())
+}
+
 fn extract_response_text(response_json: &Value) -> Option<String> {
     let output = response_json.get("output")?.as_array()?;
 
@@ -445,6 +515,22 @@ fn create_commit(repo_path: String, input: CommitInput) -> Result<CheckoutResult
 }
 
 #[tauri::command]
+fn create_branch(repo_path: String, input: CreateBranchInput) -> Result<CheckoutResult, String> {
+    ensure_git_repo(&repo_path)?;
+
+    let name = input.name.trim();
+    if name.is_empty() {
+        return Err("Branch name cannot be empty.".to_string());
+    }
+
+    run_git(&repo_path, &["check-ref-format", "--branch", name])?;
+    run_git(&repo_path, &["switch", "-c", name])?;
+
+    let (head, detached) = get_current_head(&repo_path)?;
+    Ok(CheckoutResult { head, detached })
+}
+
+#[tauri::command]
 async fn generate_commit_message(
     repo_path: String,
     input: GenerateCommitMessageInput,
@@ -461,58 +547,45 @@ async fn generate_commit_message(
         return Err("OpenAI model is required.".to_string());
     }
 
-    let diff_context = staged_diff_context(&repo_path)?;
-    let client = Client::new();
-    let response = client
-        .post("https://api.openai.com/v1/responses")
-        .bearer_auth(api_key)
-        .header("Content-Type", "application/json")
-        .json(&serde_json::json!({
-            "model": model,
-            "input": [
-                {
-                    "role": "system",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": "Write a concise git commit message for staged changes. Return plain text only. Use imperative mood. Prefer a short subject line. Add a blank line and bullet list only when the change clearly needs extra detail."
-                        }
-                    ]
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": diff_context
-                        }
-                    ]
-                }
-            ]
-        }))
-        .send()
-        .await
-        .map_err(|error| format!("Failed to call OpenAI API: {error}"))?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "Unable to read error response.".to_string());
-        return Err(format!("OpenAI API request failed ({status}): {body}"));
-    }
-
-    let response_json: Value = response
-        .json()
-        .await
-        .map_err(|error| format!("Failed to parse OpenAI response: {error}"))?;
-    let message = extract_response_text(&response_json)
-        .ok_or_else(|| "OpenAI response did not include message text.".to_string())?;
+    let message = generate_text_from_staged_diff(
+        &repo_path,
+        api_key,
+        model,
+        "Write a concise git commit message for staged changes. Return plain text only. Use imperative mood. Prefer a short subject line. Add a blank line and bullet list only when the change clearly needs extra detail.",
+    )
+    .await?;
 
     Ok(GenerateCommitMessageResult {
-        message: message.trim().to_string(),
+        message,
     })
+}
+
+#[tauri::command]
+async fn generate_branch_name(
+    repo_path: String,
+    input: GenerateCommitMessageInput,
+) -> Result<GenerateBranchNameResult, String> {
+    ensure_git_repo(&repo_path)?;
+
+    let api_key = input.api_key.trim();
+    if api_key.is_empty() {
+        return Err("OpenAI API key is required.".to_string());
+    }
+
+    let model = input.model.trim();
+    if model.is_empty() {
+        return Err("OpenAI model is required.".to_string());
+    }
+
+    let branch_name = generate_text_from_staged_diff(
+        &repo_path,
+        api_key,
+        model,
+        "Write one git branch name for the staged changes. Return plain text only. Use lowercase kebab-case or slash-separated git branch format such as feature/add-search-filter or fix/status-panel. Do not include explanations, quotes, prefixes like 'branch:', or multiple options.",
+    )
+    .await?;
+
+    Ok(GenerateBranchNameResult { branch_name })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -523,8 +596,10 @@ pub fn run() {
             load_refs,
             checkout_ref,
             load_status,
+            create_branch,
             create_commit,
-            generate_commit_message
+            generate_commit_message,
+            generate_branch_name
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

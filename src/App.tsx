@@ -6,8 +6,10 @@ import { CommitPanel } from '@/components/commit-panel';
 import { RefsPanel, type FilterType, type Tone } from '@/components/refs-panel';
 import { WorkingTreePanel } from '@/components/working-tree-panel';
 import {
+  createBranch,
   checkoutRef,
   createCommit,
+  generateBranchName,
   generateCommitMessage,
   loadRefs,
   loadStatus
@@ -69,8 +71,11 @@ export default function App() {
   const [query, setQuery] = useState('');
   const [busyRef, setBusyRef] = useState('');
   const [busyLoad, setBusyLoad] = useState(false);
+  const [busyBranch, setBusyBranch] = useState(false);
   const [busyCommit, setBusyCommit] = useState(false);
+  const [busyGenerateBranch, setBusyGenerateBranch] = useState(false);
   const [busyGenerateCommit, setBusyGenerateCommit] = useState(false);
+  const [branchName, setBranchName] = useState('');
   const [commitMessage, setCommitMessage] = useState('');
   const [statusMessage, setStatusMessage] = useState('Open a repository to begin.');
   const [statusTone, setStatusTone] = useState<Tone>('neutral');
@@ -209,6 +214,36 @@ export default function App() {
     }
   }
 
+  async function handleCreateBranch(): Promise<void> {
+    if (!repoPath || busyBranch) {
+      return;
+    }
+
+    const name = branchName.trim();
+    if (!name) {
+      setStatusMessage('Enter a branch name first.');
+      setStatusTone('error');
+      return;
+    }
+
+    setBusyBranch(true);
+    setStatusMessage(`Creating branch ${name}...`);
+    setStatusTone('neutral');
+
+    try {
+      const result = await createBranch(repoPath, name);
+      setBranchName('');
+      setStatusMessage(`Created and switched to ${result.head}.`);
+      setStatusTone('success');
+      await loadRepo(repoPath);
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : 'Branch creation failed.');
+      setStatusTone('error');
+    } finally {
+      setBusyBranch(false);
+    }
+  }
+
   async function handleGenerateCommitMessage(): Promise<void> {
     if (!repoPath || busyGenerateCommit) {
       return;
@@ -240,6 +275,40 @@ export default function App() {
       setStatusTone('error');
     } finally {
       setBusyGenerateCommit(false);
+    }
+  }
+
+  async function handleGenerateBranchName(): Promise<void> {
+    if (!repoPath || busyGenerateBranch) {
+      return;
+    }
+
+    if (!openAiApiKey.trim()) {
+      setStatusMessage('Add an OpenAI API key first.');
+      setStatusTone('error');
+      return;
+    }
+
+    if (stagedFiles.length === 0) {
+      setStatusMessage('Stage changes before generating a branch name.');
+      setStatusTone('error');
+      return;
+    }
+
+    setBusyGenerateBranch(true);
+    setStatusMessage('Generating branch name...');
+    setStatusTone('neutral');
+
+    try {
+      const result = await generateBranchName(repoPath, openAiApiKey, openAiModel);
+      setBranchName(result.branchName);
+      setStatusMessage(`Branch name generated with ${openAiModel}.`);
+      setStatusTone('success');
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : 'Branch name generation failed.');
+      setStatusTone('error');
+    } finally {
+      setBusyGenerateBranch(false);
     }
   }
 
@@ -300,7 +369,10 @@ export default function App() {
             />
 
             <CommitPanel
+              branchName={branchName}
+              busyBranch={busyBranch}
               busyCommit={busyCommit}
+              busyGenerateBranch={busyGenerateBranch}
               busyGenerateCommit={busyGenerateCommit}
               commitMessage={commitMessage}
               openAiApiKey={openAiApiKey}
@@ -308,8 +380,11 @@ export default function App() {
               openAiModels={openAiModels}
               repoPath={repoPath}
               stagedFilesCount={stagedFiles.length}
+              onBranchNameChange={setBranchName}
+              onCreateBranch={handleCreateBranch}
               onCommit={handleCommit}
               onCommitMessageChange={setCommitMessage}
+              onGenerateBranchName={handleGenerateBranchName}
               onGenerateCommitMessage={handleGenerateCommitMessage}
               onOpenAiApiKeyChange={setOpenAiApiKey}
               onOpenAiModelChange={setOpenAiModel}
