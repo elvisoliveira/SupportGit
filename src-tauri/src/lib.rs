@@ -34,6 +34,7 @@ struct CheckoutResult {
 #[serde(rename_all = "camelCase")]
 struct RepoStatusFile {
     path: String,
+    action_path: String,
     staged_code: String,
     unstaged_code: String,
     staged_label: String,
@@ -54,6 +55,12 @@ struct RepoStatusResult {
 #[serde(rename_all = "camelCase")]
 struct CommitInput {
     message: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FilePathInput {
+    path: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -240,11 +247,17 @@ fn parse_name_status_z(output: &[u8], staged: bool) -> Vec<RepoStatusFile> {
             .next()
             .and_then(|part| std::str::from_utf8(part).ok())
             .unwrap_or_default();
+        let action_path;
         let path = if matches!(code, 'R' | 'C') {
             let new_path = parts
                 .next()
                 .and_then(|part| std::str::from_utf8(part).ok())
                 .unwrap_or_default();
+            action_path = if new_path.is_empty() {
+                first_path.to_string()
+            } else {
+                new_path.to_string()
+            };
             if new_path.is_empty() {
                 first_path.to_string()
             } else if first_path.is_empty() {
@@ -253,6 +266,7 @@ fn parse_name_status_z(output: &[u8], staged: bool) -> Vec<RepoStatusFile> {
                 format!("{first_path} -> {new_path}")
             }
         } else {
+            action_path = first_path.to_string();
             first_path.to_string()
         };
 
@@ -262,6 +276,7 @@ fn parse_name_status_z(output: &[u8], staged: bool) -> Vec<RepoStatusFile> {
 
         entries.push(RepoStatusFile {
             path,
+            action_path,
             staged_code: if staged { code.to_string() } else { String::new() },
             unstaged_code: if staged { String::new() } else { code.to_string() },
             staged_label: if staged {
@@ -290,6 +305,7 @@ fn parse_untracked_z(output: &[u8]) -> Vec<RepoStatusFile> {
         .filter_map(|part| std::str::from_utf8(part).ok())
         .map(|path| RepoStatusFile {
             path: path.to_string(),
+            action_path: path.to_string(),
             staged_code: String::new(),
             unstaged_code: "?".to_string(),
             staged_label: "clean".to_string(),
@@ -495,6 +511,46 @@ fn load_status(repo_path: String) -> Result<RepoStatusResult, String> {
 }
 
 #[tauri::command]
+fn stage_file(repo_path: String, input: FilePathInput) -> Result<(), String> {
+    ensure_git_repo(&repo_path)?;
+
+    let path = input.path.trim();
+    if path.is_empty() {
+        return Err("File path cannot be empty.".to_string());
+    }
+
+    run_git(&repo_path, &["add", "--", path])?;
+    Ok(())
+}
+
+#[tauri::command]
+fn stage_all_files(repo_path: String) -> Result<(), String> {
+    ensure_git_repo(&repo_path)?;
+    run_git(&repo_path, &["add", "--all"])?;
+    Ok(())
+}
+
+#[tauri::command]
+fn unstage_file(repo_path: String, input: FilePathInput) -> Result<(), String> {
+    ensure_git_repo(&repo_path)?;
+
+    let path = input.path.trim();
+    if path.is_empty() {
+        return Err("File path cannot be empty.".to_string());
+    }
+
+    run_git(&repo_path, &["reset", "HEAD", "--", path])?;
+    Ok(())
+}
+
+#[tauri::command]
+fn unstage_all_files(repo_path: String) -> Result<(), String> {
+    ensure_git_repo(&repo_path)?;
+    run_git(&repo_path, &["reset", "HEAD", "--", "."])?;
+    Ok(())
+}
+
+#[tauri::command]
 fn create_commit(repo_path: String, input: CommitInput) -> Result<CheckoutResult, String> {
     ensure_git_repo(&repo_path)?;
 
@@ -596,6 +652,10 @@ pub fn run() {
             load_refs,
             checkout_ref,
             load_status,
+            stage_file,
+            stage_all_files,
+            unstage_file,
+            unstage_all_files,
             create_branch,
             create_commit,
             generate_commit_message,

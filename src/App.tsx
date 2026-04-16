@@ -12,7 +12,11 @@ import {
   generateBranchName,
   generateCommitMessage,
   loadRefs,
-  loadStatus
+  loadStatus,
+  stageAllFiles,
+  stageFile,
+  unstageAllFiles,
+  unstageFile
 } from '@/lib/git';
 import type { GitRef, RepoStatusFile } from '@/shared/types';
 
@@ -70,6 +74,8 @@ export default function App() {
   const [filter, setFilter] = useState<FilterType>('all');
   const [query, setQuery] = useState('');
   const [busyRef, setBusyRef] = useState('');
+  const [busyBulkAction, setBusyBulkAction] = useState<'' | 'stage' | 'unstage'>('');
+  const [busyFileKey, setBusyFileKey] = useState('');
   const [busyLoad, setBusyLoad] = useState(false);
   const [busyBranch, setBusyBranch] = useState(false);
   const [busyCommit, setBusyCommit] = useState(false);
@@ -214,6 +220,83 @@ export default function App() {
     }
   }
 
+  async function handleToggleStage(
+    file: RepoStatusFile,
+    kind: 'staged' | 'unstaged'
+  ): Promise<void> {
+    if (!repoPath || busyFileKey || busyBulkAction) {
+      return;
+    }
+
+    const fileKey = `${kind}:${file.actionPath}`;
+    setBusyFileKey(fileKey);
+    setStatusMessage(`${kind === 'staged' ? 'Unstaging' : 'Staging'} ${file.path}...`);
+    setStatusTone('neutral');
+
+    try {
+      if (kind === 'staged') {
+        await unstageFile(repoPath, file.actionPath);
+      } else {
+        await stageFile(repoPath, file.actionPath);
+      }
+
+      setStatusMessage(
+        `${kind === 'staged' ? 'Unstaged' : 'Staged'} ${file.path}.`
+      );
+      setStatusTone('success');
+      await loadRepo(repoPath);
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : 'File update failed.');
+      setStatusTone('error');
+    } finally {
+      setBusyFileKey('');
+    }
+  }
+
+  async function handleStageAll(): Promise<void> {
+    if (!repoPath || busyBulkAction) {
+      return;
+    }
+
+    setBusyBulkAction('stage');
+    setStatusMessage('Staging all changes...');
+    setStatusTone('neutral');
+
+    try {
+      await stageAllFiles(repoPath);
+      setStatusMessage('Staged all changes.');
+      setStatusTone('success');
+      await loadRepo(repoPath);
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : 'Stage all failed.');
+      setStatusTone('error');
+    } finally {
+      setBusyBulkAction('');
+    }
+  }
+
+  async function handleUnstageAll(): Promise<void> {
+    if (!repoPath || busyBulkAction) {
+      return;
+    }
+
+    setBusyBulkAction('unstage');
+    setStatusMessage('Unstaging all changes...');
+    setStatusTone('neutral');
+
+    try {
+      await unstageAllFiles(repoPath);
+      setStatusMessage('Unstaged all changes.');
+      setStatusTone('success');
+      await loadRepo(repoPath);
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : 'Unstage all failed.');
+      setStatusTone('error');
+    } finally {
+      setBusyBulkAction('');
+    }
+  }
+
   async function handleCreateBranch(): Promise<void> {
     if (!repoPath || busyBranch) {
       return;
@@ -345,7 +428,7 @@ export default function App() {
 
       <div className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden" onWheel={handleShellWheel}>
         <main className="flex h-full min-w-full min-w-max flex-col gap-px overflow-hidden bg-border">
-          <div className="grid min-h-0 flex-1 grid-cols-[minmax(720px,1.4fr)_minmax(360px,0.72fr)_minmax(320px,0.58fr)] gap-px overflow-hidden">
+          <div className="grid min-h-0 flex-1 grid-cols-[minmax(720px,960px)_minmax(360px,0.72fr)_minmax(320px,0.58fr)] gap-px overflow-hidden">
             <RefsPanel
               busyLoad={busyLoad}
               busyRef={busyRef}
@@ -363,9 +446,14 @@ export default function App() {
             />
 
             <WorkingTreePanel
+              busyBulkAction={busyBulkAction}
+              busyFileKey={busyFileKey}
               repoPath={repoPath}
               stagedFiles={stagedFiles}
               unstagedFiles={unstagedFiles}
+              onStageAll={handleStageAll}
+              onToggleStage={handleToggleStage}
+              onUnstageAll={handleUnstageAll}
             />
 
             <CommitPanel

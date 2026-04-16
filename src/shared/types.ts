@@ -23,6 +23,7 @@ export interface CheckoutResult {
 
 export interface RepoStatusFile {
   path: string;
+  actionPath: string;
   stagedCode: string;
   unstagedCode: string;
   stagedLabel: string;

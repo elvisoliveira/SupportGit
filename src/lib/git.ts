@@ -17,6 +17,28 @@ export function loadStatus(repoPath: string): Promise<RepoStatusResult> {
   return invoke<RepoStatusResult>('load_status', { repoPath });
 }
 
+export function stageFile(repoPath: string, path: string): Promise<void> {
+  return invoke('stage_file', {
+    repoPath,
+    input: { path }
+  });
+}
+
+export function stageAllFiles(repoPath: string): Promise<void> {
+  return invoke('stage_all_files', { repoPath });
+}
+
+export function unstageFile(repoPath: string, path: string): Promise<void> {
+  return invoke('unstage_file', {
+    repoPath,
+    input: { path }
+  });
+}
+
+export function unstageAllFiles(repoPath: string): Promise<void> {
+  return invoke('unstage_all_files', { repoPath });
+}
+
 export function checkoutRef(repoPath: string, reference: GitRef): Promise<CheckoutResult> {
   return invoke<CheckoutResult>('checkout_ref', { repoPath, reference });
 }
