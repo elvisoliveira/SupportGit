@@ -16,6 +16,7 @@ function FileList({
   files,
   kind,
   busyFileKey,
+  partialPaths,
   onToggleStage
 }: {
   title: string;
@@ -23,6 +24,7 @@ function FileList({
   files: RepoStatusFile[];
   kind: 'staged' | 'unstaged';
   busyFileKey: string;
+  partialPaths: Set<string>;
   onToggleStage: (file: RepoStatusFile, kind: 'staged' | 'unstaged') => Promise<void>;
 }) {
   return (
@@ -52,7 +54,14 @@ function FileList({
                     </Badge>
                     <div className="min-w-0">
                       <p className="break-all text-xs font-medium">{file.path}</p>
-                      <p className="mt-1 text-[11px] text-muted-foreground">{label}</p>
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+                        <span>{label}</span>
+                        {partialPaths.has(file.path) ? (
+                          <Badge variant="outline" className="h-4 px-1 text-[10px]">
+                            partially staged
+                          </Badge>
+                        ) : null}
+                      </div>
                     </div>
                     </div>
                     <Button
@@ -101,6 +110,11 @@ export function WorkingTreePanel({
   onToggleStage,
   onUnstageAll
 }: WorkingTreePanelProps) {
+  const stagedPathSet = new Set(stagedFiles.map((file) => file.path));
+  const partialPaths = new Set(
+    unstagedFiles.filter((file) => stagedPathSet.has(file.path)).map((file) => file.path)
+  );
+
   return (
     <Card className="flex min-h-0 w-full flex-col">
       <CardHeader>
@@ -140,6 +154,7 @@ export function WorkingTreePanel({
           files={stagedFiles}
           kind="staged"
           busyFileKey={busyFileKey}
+          partialPaths={partialPaths}
           onToggleStage={onToggleStage}
         />
         <FileList
@@ -148,6 +163,7 @@ export function WorkingTreePanel({
           files={unstagedFiles}
           kind="unstaged"
           busyFileKey={busyFileKey}
+          partialPaths={partialPaths}
           onToggleStage={onToggleStage}
         />
       </CardContent>

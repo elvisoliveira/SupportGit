@@ -42,3 +42,10 @@ export interface GenerateCommitMessageResult {
 export interface GenerateBranchNameResult {
   branchName: string;
 }
+
+export interface GroupAndStageResult {
+  message: string;
+  rationale: string;
+  hunkCount: number;
+  files: string[];
+}

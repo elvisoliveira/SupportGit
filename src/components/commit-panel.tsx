@@ -1,4 +1,4 @@
-import { GitBranch, GitCommitHorizontal, Sparkles } from 'lucide-react';
+import { GitBranch, GitCommitHorizontal, Layers, Sparkles } from 'lucide-react';
 
 import {
   Accordion,
@@ -25,18 +25,21 @@ interface CommitPanelProps {
   busyCommit: boolean;
   busyGenerateBranch: boolean;
   busyGenerateCommit: boolean;
+  busyGroupStage: boolean;
   commitMessage: string;
   openAiApiKey: string;
   openAiModel: string;
   openAiModels: readonly string[];
   repoPath: string;
   stagedFilesCount: number;
+  unstagedFilesCount: number;
   onBranchNameChange: (value: string) => void;
   onCreateBranch: () => Promise<void>;
   onCommit: () => Promise<void>;
   onCommitMessageChange: (value: string) => void;
   onGenerateBranchName: () => Promise<void>;
   onGenerateCommitMessage: () => Promise<void>;
+  onGroupAndStage: () => Promise<void>;
   onOpenAiApiKeyChange: (value: string) => void;
   onOpenAiModelChange: (value: string) => void;
 }
@@ -47,18 +50,21 @@ export function CommitPanel({
   busyCommit,
   busyGenerateBranch,
   busyGenerateCommit,
+  busyGroupStage,
   commitMessage,
   openAiApiKey,
   openAiModel,
   openAiModels,
   repoPath,
   stagedFilesCount,
+  unstagedFilesCount,
   onBranchNameChange,
   onCreateBranch,
   onCommit,
   onCommitMessageChange,
   onGenerateBranchName,
   onGenerateCommitMessage,
+  onGroupAndStage,
   onOpenAiApiKeyChange,
   onOpenAiModelChange
 }: CommitPanelProps) {
@@ -170,6 +176,30 @@ export function CommitPanel({
                     >
                       {busyBranch ? 'Creating Branch...' : 'Create and Switch Branch'}
                     </Button>
+                  </section>
+
+                  <section className="space-y-3">
+                    <div className="flex items-center gap-2">
+                      <Layers className="size-4 text-muted-foreground" />
+                      <CardTitle className="text-sm">Group & Stage Next</CardTitle>
+                    </div>
+                    <CardDescription>
+                      AI picks one coherent set of hunks from unstaged changes, stages them, and suggests a commit message. Review the staged diff before committing.
+                    </CardDescription>
+                    <Button
+                      variant="outline"
+                      className="w-full"
+                      disabled={!repoPath || unstagedFilesCount === 0 || busyGroupStage || busyCommit}
+                      onClick={() => void onGroupAndStage()}
+                    >
+                      <Sparkles />
+                      {busyGroupStage ? 'Grouping...' : 'Group & Stage Next Feature'}
+                    </Button>
+                    {busyGroupStage ? (
+                      <p className="text-xs text-muted-foreground">
+                        Parsing hunks and asking {openAiModel} to pick a coherent group.
+                      </p>
+                    ) : null}
                   </section>
 
                   <section className="space-y-3 pb-4">

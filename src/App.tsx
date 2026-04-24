@@ -11,6 +11,7 @@ import {
   createCommit,
   generateBranchName,
   generateCommitMessage,
+  groupAndStageUnstaged,
   loadRefs,
   loadStatus,
   stageAllFiles,
@@ -81,6 +82,7 @@ export default function App() {
   const [busyCommit, setBusyCommit] = useState(false);
   const [busyGenerateBranch, setBusyGenerateBranch] = useState(false);
   const [busyGenerateCommit, setBusyGenerateCommit] = useState(false);
+  const [busyGroupStage, setBusyGroupStage] = useState(false);
   const [branchName, setBranchName] = useState('');
   const [commitMessage, setCommitMessage] = useState('');
   const [statusMessage, setStatusMessage] = useState('Open a repository to begin.');
@@ -361,6 +363,43 @@ export default function App() {
     }
   }
 
+  async function handleGroupAndStage(): Promise<void> {
+    if (!repoPath || busyGroupStage) {
+      return;
+    }
+
+    if (!openAiApiKey.trim()) {
+      setStatusMessage('Add an OpenAI API key first.');
+      setStatusTone('error');
+      return;
+    }
+
+    if (unstagedFiles.length === 0) {
+      setStatusMessage('No unstaged changes to group.');
+      setStatusTone('error');
+      return;
+    }
+
+    setBusyGroupStage(true);
+    setStatusMessage('Grouping unstaged hunks with AI...');
+    setStatusTone('neutral');
+
+    try {
+      const result = await groupAndStageUnstaged(repoPath, openAiApiKey, openAiModel);
+      setCommitMessage(result.message);
+      const hunkLabel = `${result.hunkCount} hunk${result.hunkCount === 1 ? '' : 's'}`;
+      const fileLabel = `${result.files.length} file${result.files.length === 1 ? '' : 's'}`;
+      setStatusMessage(`Staged ${hunkLabel} across ${fileLabel}: ${result.rationale}`);
+      setStatusTone('success');
+      await loadRepo(repoPath);
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : 'Group and stage failed.');
+      setStatusTone('error');
+    } finally {
+      setBusyGroupStage(false);
+    }
+  }
+
   async function handleGenerateBranchName(): Promise<void> {
     if (!repoPath || busyGenerateBranch) {
       return;
@@ -436,18 +475,21 @@ export default function App() {
                 busyCommit={busyCommit}
                 busyGenerateBranch={busyGenerateBranch}
                 busyGenerateCommit={busyGenerateCommit}
+                busyGroupStage={busyGroupStage}
                 commitMessage={commitMessage}
                 openAiApiKey={openAiApiKey}
                 openAiModel={openAiModel}
                 openAiModels={openAiModels}
                 repoPath={repoPath}
                 stagedFilesCount={stagedFiles.length}
+                unstagedFilesCount={unstagedFiles.length}
                 onBranchNameChange={setBranchName}
                 onCreateBranch={handleCreateBranch}
                 onCommit={handleCommit}
                 onCommitMessageChange={setCommitMessage}
                 onGenerateBranchName={handleGenerateBranchName}
                 onGenerateCommitMessage={handleGenerateCommitMessage}
+                onGroupAndStage={handleGroupAndStage}
                 onOpenAiApiKeyChange={setOpenAiApiKey}
                 onOpenAiModelChange={setOpenAiModel}
               />

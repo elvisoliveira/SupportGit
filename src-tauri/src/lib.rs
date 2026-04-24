@@ -1,7 +1,8 @@
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -86,6 +87,40 @@ struct GenerateCommitMessageResult {
 #[serde(rename_all = "camelCase")]
 struct GenerateBranchNameResult {
     branch_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GroupAndStageInput {
+    api_key: String,
+    model: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GroupAndStageResult {
+    message: String,
+    rationale: String,
+    hunk_count: usize,
+    files: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AiHunkGroup {
+    hunk_ids: Vec<String>,
+    commit_message: String,
+    rationale: String,
+}
+
+struct ParsedHunk {
+    header_line: String,
+    body_lines: Vec<String>,
+}
+
+struct ParsedFile {
+    raw_header: String,
+    path: String,
+    hunks: Vec<ParsedHunk>,
 }
 
 fn run_git(repo_path: &str, args: &[&str]) -> Result<String, String> {
@@ -425,6 +460,213 @@ fn extract_response_text(response_json: &Value) -> Option<String> {
     None
 }
 
+fn parse_unified_diff(diff: &str) -> Vec<ParsedFile> {
+    let mut files: Vec<ParsedFile> = Vec::new();
+    let mut current_file: Option<ParsedFile> = None;
+    let mut current_hunk: Option<ParsedHunk> = None;
+
+    let flush_hunk =
+        |current_hunk: &mut Option<ParsedHunk>, current_file: &mut Option<ParsedFile>| {
+            if let (Some(hunk), Some(file)) = (current_hunk.take(), current_file.as_mut()) {
+                file.hunks.push(hunk);
+            }
+        };
+
+    for line in diff.lines() {
+        if let Some(rest) = line.strip_prefix("diff --git ") {
+            flush_hunk(&mut current_hunk, &mut current_file);
+            if let Some(file) = current_file.take() {
+                files.push(file);
+            }
+            let path = extract_diff_path(rest);
+            current_file = Some(ParsedFile {
+                raw_header: format!("{line}\n"),
+                path,
+                hunks: Vec::new(),
+            });
+            continue;
+        }
+
+        if line.starts_with("@@ ") {
+            flush_hunk(&mut current_hunk, &mut current_file);
+            current_hunk = Some(ParsedHunk {
+                header_line: line.to_string(),
+                body_lines: Vec::new(),
+            });
+            continue;
+        }
+
+        if let Some(hunk) = current_hunk.as_mut() {
+            hunk.body_lines.push(line.to_string());
+        } else if let Some(file) = current_file.as_mut() {
+            file.raw_header.push_str(line);
+            file.raw_header.push('\n');
+        }
+    }
+
+    flush_hunk(&mut current_hunk, &mut current_file);
+    if let Some(file) = current_file.take() {
+        files.push(file);
+    }
+
+    files
+}
+
+fn extract_diff_path(rest: &str) -> String {
+    let parts: Vec<&str> = rest.split(' ').collect();
+    if let Some(b_path) = parts.get(1) {
+        if let Some(stripped) = b_path.strip_prefix("b/") {
+            return stripped.to_string();
+        }
+        return b_path.to_string();
+    }
+    rest.to_string()
+}
+
+fn reassemble_patch(file: &ParsedFile, hunk_indices: &[usize]) -> String {
+    let mut out = file.raw_header.clone();
+    for &idx in hunk_indices {
+        let hunk = &file.hunks[idx];
+        out.push_str(&hunk.header_line);
+        out.push('\n');
+        for body_line in &hunk.body_lines {
+            out.push_str(body_line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn apply_patch_cached(repo_path: &str, patch: &str) -> Result<(), String> {
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .arg("apply")
+        .arg("--cached")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Failed to spawn git apply: {error}"))?;
+
+    {
+        let stdin = child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| "git apply stdin unavailable".to_string())?;
+        stdin
+            .write_all(patch.as_bytes())
+            .map_err(|error| format!("Failed to write patch: {error}"))?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("git apply wait failed: {error}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let message = if stderr.is_empty() {
+            "git apply failed".to_string()
+        } else {
+            format!("git apply failed: {stderr}")
+        };
+        return Err(message);
+    }
+
+    Ok(())
+}
+
+fn truncate_text(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        text.to_string()
+    } else {
+        let truncated: String = text.chars().take(max_chars).collect();
+        format!("{truncated}\n... [truncated]")
+    }
+}
+
+async fn ai_pick_hunk_group(
+    api_key: &str,
+    model: &str,
+    prompt_text: &str,
+) -> Result<AiHunkGroup, String> {
+    let client = Client::new();
+    let schema = serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["hunk_ids", "commit_message", "rationale"],
+        "properties": {
+            "hunk_ids": {
+                "type": "array",
+                "items": { "type": "string" }
+            },
+            "commit_message": { "type": "string" },
+            "rationale": { "type": "string" }
+        }
+    });
+
+    let payload = serde_json::json!({
+        "model": model,
+        "input": [
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "You group hunks of a git diff. From the provided hunks, pick ONE coherent set that together form a single logical change (one feature, one fix, or one cohesive refactor). Keep interdependent hunks together (for example a new function and its call sites, or a helper and its usage). Never mix unrelated topics. If no coherent group exists, return an empty hunk_ids array. Write a concise imperative commit message for the chosen group (short subject, optional bullet body) and a one-sentence rationale."
+                    }
+                ]
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": prompt_text
+                    }
+                ]
+            }
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "hunk_group",
+                "schema": schema,
+                "strict": true
+            }
+        }
+    });
+
+    let response = client
+        .post("https://api.openai.com/v1/responses")
+        .bearer_auth(api_key)
+        .header("Content-Type", "application/json")
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|error| format!("Failed to call OpenAI API: {error}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unable to read error response.".to_string());
+        return Err(format!("OpenAI API request failed ({status}): {body}"));
+    }
+
+    let response_json: Value = response
+        .json()
+        .await
+        .map_err(|error| format!("Failed to parse OpenAI response: {error}"))?;
+
+    let text = extract_response_text(&response_json)
+        .ok_or_else(|| "OpenAI response did not include text.".to_string())?;
+
+    serde_json::from_str::<AiHunkGroup>(text.trim())
+        .map_err(|error| format!("Failed to parse AI JSON: {error} — raw: {text}"))
+}
+
 #[tauri::command]
 fn load_refs(repo_path: String) -> Result<LoadRefsResult, String> {
     ensure_git_repo(&repo_path)?;
@@ -644,6 +886,98 @@ async fn generate_branch_name(
     Ok(GenerateBranchNameResult { branch_name })
 }
 
+#[tauri::command]
+async fn group_and_stage_unstaged(
+    repo_path: String,
+    input: GroupAndStageInput,
+) -> Result<GroupAndStageResult, String> {
+    ensure_git_repo(&repo_path)?;
+
+    let api_key = input.api_key.trim();
+    if api_key.is_empty() {
+        return Err("OpenAI API key is required.".to_string());
+    }
+
+    let model = input.model.trim();
+    if model.is_empty() {
+        return Err("OpenAI model is required.".to_string());
+    }
+
+    let diff_bytes = run_git_bytes(
+        &repo_path,
+        &["diff", "--no-color", "--no-ext-diff", "--unified=3"],
+    )?;
+    let diff = String::from_utf8(diff_bytes)
+        .map_err(|error| format!("Unstaged diff is not valid UTF-8: {error}"))?;
+
+    if diff.trim().is_empty() {
+        return Err("No unstaged changes to group.".to_string());
+    }
+
+    let files = parse_unified_diff(&diff);
+
+    const MAX_HUNK_CHARS: usize = 2_000;
+    const MAX_PROMPT_CHARS: usize = 40_000;
+
+    let mut catalog: Vec<(String, usize, usize)> = Vec::new();
+    let mut prompt_sections: Vec<String> = Vec::new();
+
+    for (file_idx, file) in files.iter().enumerate() {
+        for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
+            let id = format!("{file_idx}:{hunk_idx}");
+            let body = hunk.body_lines.join("\n");
+            let summary = format!(
+                "--- hunk {id} ({path}) ---\n{header}\n{body}",
+                id = id,
+                path = file.path,
+                header = hunk.header_line,
+                body = truncate_text(&body, MAX_HUNK_CHARS),
+            );
+            catalog.push((id, file_idx, hunk_idx));
+            prompt_sections.push(summary);
+        }
+    }
+
+    if catalog.is_empty() {
+        return Err("No text hunks were found in the unstaged diff.".to_string());
+    }
+
+    let joined = prompt_sections.join("\n\n");
+    let prompt_text = truncate_text(&joined, MAX_PROMPT_CHARS);
+
+    let group = ai_pick_hunk_group(api_key, model, &prompt_text).await?;
+
+    if group.hunk_ids.is_empty() {
+        return Err("AI could not identify a coherent hunk group.".to_string());
+    }
+
+    let mut per_file: std::collections::BTreeMap<usize, Vec<usize>> =
+        std::collections::BTreeMap::new();
+    for id in &group.hunk_ids {
+        let entry = catalog
+            .iter()
+            .find(|(catalog_id, _, _)| catalog_id == id)
+            .ok_or_else(|| format!("AI returned unknown hunk id: {id}"))?;
+        per_file.entry(entry.1).or_default().push(entry.2);
+    }
+
+    let mut applied_files: Vec<String> = Vec::new();
+    for (file_idx, mut hunk_indices) in per_file {
+        hunk_indices.sort_unstable();
+        hunk_indices.dedup();
+        let patch = reassemble_patch(&files[file_idx], &hunk_indices);
+        apply_patch_cached(&repo_path, &patch)?;
+        applied_files.push(files[file_idx].path.clone());
+    }
+
+    Ok(GroupAndStageResult {
+        message: group.commit_message,
+        rationale: group.rationale,
+        hunk_count: group.hunk_ids.len(),
+        files: applied_files,
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -659,7 +993,8 @@ pub fn run() {
             create_branch,
             create_commit,
             generate_commit_message,
-            generate_branch_name
+            generate_branch_name,
+            group_and_stage_unstaged
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -5,6 +5,7 @@ import type {
   GenerateBranchNameResult,
   GenerateCommitMessageResult,
   GitRef,
+  GroupAndStageResult,
   LoadRefsResult,
   RepoStatusResult
 } from '@/shared/types';
@@ -74,6 +75,17 @@ export function generateBranchName(
   model: string
 ): Promise<GenerateBranchNameResult> {
   return invoke<GenerateBranchNameResult>('generate_branch_name', {
+    repoPath,
+    input: { apiKey, model }
+  });
+}
+
+export function groupAndStageUnstaged(
+  repoPath: string,
+  apiKey: string,
+  model: string
+): Promise<GroupAndStageResult> {
+  return invoke<GroupAndStageResult>('group_and_stage_unstaged', {
     repoPath,
     input: { apiKey, model }
   });
