@@ -102,7 +102,7 @@ export function WorkingTreePanel({
   onUnstageAll
 }: WorkingTreePanelProps) {
   return (
-    <Card className="flex min-h-0 flex-col">
+    <Card className="flex min-h-0 w-full flex-col">
       <CardHeader>
         <div className="flex items-start justify-between gap-3">
           <div>

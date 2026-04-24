@@ -428,55 +428,61 @@ export default function App() {
 
       <div className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden" onWheel={handleShellWheel}>
         <main className="flex h-full min-w-full min-w-max flex-col gap-px overflow-hidden bg-border">
-          <div className="grid min-h-0 flex-1 grid-cols-[minmax(720px,960px)_minmax(360px,0.72fr)_minmax(320px,0.58fr)] gap-px overflow-hidden">
-            <RefsPanel
-              busyLoad={busyLoad}
-              busyRef={busyRef}
-              currentHead={currentHead}
-              filter={filter}
-              query={query}
-              repoPath={repoPath}
-              refsCount={refs.length}
-              statusMessage={statusMessage}
-              statusTone={statusTone}
-              visibleRefs={visibleRefs}
-              onCheckout={handleCheckout}
-              onFilterChange={setFilter}
-              onQueryChange={setQuery}
-            />
+          <div className="flex min-h-0 flex-1 gap-px overflow-hidden">
+            <div className="flex min-h-0 w-[360px] shrink-0">
+              <CommitPanel
+                branchName={branchName}
+                busyBranch={busyBranch}
+                busyCommit={busyCommit}
+                busyGenerateBranch={busyGenerateBranch}
+                busyGenerateCommit={busyGenerateCommit}
+                commitMessage={commitMessage}
+                openAiApiKey={openAiApiKey}
+                openAiModel={openAiModel}
+                openAiModels={openAiModels}
+                repoPath={repoPath}
+                stagedFilesCount={stagedFiles.length}
+                onBranchNameChange={setBranchName}
+                onCreateBranch={handleCreateBranch}
+                onCommit={handleCommit}
+                onCommitMessageChange={setCommitMessage}
+                onGenerateBranchName={handleGenerateBranchName}
+                onGenerateCommitMessage={handleGenerateCommitMessage}
+                onOpenAiApiKeyChange={setOpenAiApiKey}
+                onOpenAiModelChange={setOpenAiModel}
+              />
+            </div>
 
-            <WorkingTreePanel
-              busyBulkAction={busyBulkAction}
-              busyFileKey={busyFileKey}
-              repoPath={repoPath}
-              stagedFiles={stagedFiles}
-              unstagedFiles={unstagedFiles}
-              onStageAll={handleStageAll}
-              onToggleStage={handleToggleStage}
-              onUnstageAll={handleUnstageAll}
-            />
+            <div className="flex min-h-0 w-[420px] shrink-0">
+              <WorkingTreePanel
+                busyBulkAction={busyBulkAction}
+                busyFileKey={busyFileKey}
+                repoPath={repoPath}
+                stagedFiles={stagedFiles}
+                unstagedFiles={unstagedFiles}
+                onStageAll={handleStageAll}
+                onToggleStage={handleToggleStage}
+                onUnstageAll={handleUnstageAll}
+              />
+            </div>
 
-            <CommitPanel
-              branchName={branchName}
-              busyBranch={busyBranch}
-              busyCommit={busyCommit}
-              busyGenerateBranch={busyGenerateBranch}
-              busyGenerateCommit={busyGenerateCommit}
-              commitMessage={commitMessage}
-              openAiApiKey={openAiApiKey}
-              openAiModel={openAiModel}
-              openAiModels={openAiModels}
-              repoPath={repoPath}
-              stagedFilesCount={stagedFiles.length}
-              onBranchNameChange={setBranchName}
-              onCreateBranch={handleCreateBranch}
-              onCommit={handleCommit}
-              onCommitMessageChange={setCommitMessage}
-              onGenerateBranchName={handleGenerateBranchName}
-              onGenerateCommitMessage={handleGenerateCommitMessage}
-              onOpenAiApiKeyChange={setOpenAiApiKey}
-              onOpenAiModelChange={setOpenAiModel}
-            />
+            <div className="flex min-h-0 min-w-[720px] flex-1">
+              <RefsPanel
+                busyLoad={busyLoad}
+                busyRef={busyRef}
+                currentHead={currentHead}
+                filter={filter}
+                query={query}
+                repoPath={repoPath}
+                refsCount={refs.length}
+                statusMessage={statusMessage}
+                statusTone={statusTone}
+                visibleRefs={visibleRefs}
+                onCheckout={handleCheckout}
+                onFilterChange={setFilter}
+                onQueryChange={setQuery}
+              />
+            </div>
           </div>
         </main>
       </div>

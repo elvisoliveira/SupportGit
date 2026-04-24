@@ -128,6 +128,8 @@
 
   html {
     @apply h-full overflow-hidden font-sans;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
   }
 
   body {
@@ -140,5 +142,18 @@
 
   #root {
     @apply h-full overflow-hidden;
+  }
+
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background-color: var(--border);
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
   }
 }

@@ -124,7 +124,7 @@ export function RefsPanel({
   onQueryChange
 }: RefsPanelProps) {
   return (
-    <Card className="flex min-h-0 flex-col">
+    <Card className="flex min-h-0 w-full flex-col">
       <CardHeader className="gap-3">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
